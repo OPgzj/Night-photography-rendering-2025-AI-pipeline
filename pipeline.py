@@ -15,43 +15,54 @@ from IAT import IAT
 import torchvision
 import os
 
+# 🔹 自动检测 GPU 还是 CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-def lowlight(data_lowlight):
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    model = IAT().to(device)
-    model.load_state_dict(torch.load('./model_zoo/best_Epoch16_1024.pth'))
-    model.eval()
+
+def lowlight(model, data_lowlight):
     with torch.no_grad():
         start = time.time()
         _, _, enhanced_image = model(data_lowlight)
+    torch.cuda.empty_cache()  # 释放显存
     end_time = (time.time() - start)
     print(end_time)
-
     return enhanced_image
 
-def denoise(img):
+def denoise(model, img):
     n_channels = 3
 
-    model_path = './model_zoo/SCU_best_Epoch4.pth'
-
-    model = net(in_nc=n_channels, config=[4, 4, 4, 4, 4, 4, 4], dim=64)
-
-    model.load_state_dict(torch.load(model_path), strict=True)
-    model.eval()
+   
     for k, v in model.named_parameters():
         v.requires_grad = False
     model = model.to(device)
     with torch.no_grad():
         denoised_img = model(img)
-
+    torch.cuda.empty_cache()  # 释放显存
     return denoised_img
-def main():
-    raw_path = './data/test/raw/'
-    save_path_SCU = 'data/test/final_rendering/'
+
+def process_images(input_dir):
+    print(f"Using device: {device}")  # 打印设备信息
+
+    # 载入 IATnet 模型
+    IATnet = IAT().to(device)
+    IATnet.load_state_dict(torch.load('./model_zoo/best_Epoch16_1024.pth', map_location=device))  # ✅ 支持 CPU 和 GPU
+    IATnet.eval()
+
+    # 载入 SCUnet 模型
+    SCUnet_path = './model_zoo/SCU_best_Epoch3.pth'
+    SCUnet = net(in_nc=3, config=[4, 4, 4, 4, 4, 4, 4], dim=64).to(device)
+    SCUnet.load_state_dict(torch.load(SCUnet_path, map_location=device))  # ✅ 支持 CPU 和 GPU
+    SCUnet.eval()
+
+
+    # 设置输入和输出路径
+    raw_path = Path(input_dir)
+    save_path_SCU = Path(input_dir)  # 确保输出到 `/data/`
+
     file_names = os.listdir(raw_path)
 
     for file_name in file_names:
         if file_name.lower().endswith('.png'):
+            torch.cuda.empty_cache()  # 释放显存
             file_path = os.path.join(raw_path, file_name)
             png_path = Path(file_path)
 
@@ -95,20 +106,35 @@ def main():
 
             srgb_image = pipeline_demo.srgb_transform(xyz_image, metadata)
             img_uint8 = pipeline_demo.to_uint8(srgb_image, metadata)
+                        # 转换为 PyTorch 格式并移动到 `device`
             srgb = cv2.cvtColor(img_uint8, cv2.COLOR_BGR2RGB)
             srgb = (srgb / 255.0).astype(np.float32)
             srgb = torch.tensor(srgb).permute(2, 0, 1).unsqueeze(0).to(device)
-
+            
             # Apply lowlight enhancement
-            img_L = lowlight(srgb)
+            img_L = lowlight(IATnet,srgb)
 
             # Clamp and denoise without saving
             img_L_clamped = img_L.clamp(0, 1)
-            img_D = denoise(img_L_clamped)
+            img_D = denoise(SCUnet, img_L_clamped)
 
             file_name = file_name.replace('.png', '.jpg')
             torchvision.utils.save_image(img_D, os.path.join(save_path_SCU, file_name))
 
             print(f"{file_name} process done!")
+            torch.cuda.empty_cache()  # 释放显存
+
+def main():
+    parser = argparse.ArgumentParser(description="处理 PNG 图像")
+    parser.add_argument("-p", "--path", required=True, help="输入数据目录")
+
+    args = parser.parse_args()
+
+    print(f"参数: path={args.path}")
+
+    process_images(args.path)
+
 if __name__ == '__main__':
+    # input_dir = Path("E:/NTIRE2025/test")
+    # process_images(input_dir)
     main()

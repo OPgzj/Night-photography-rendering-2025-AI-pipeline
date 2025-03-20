@@ -1,4 +1,4 @@
-import imp
+import importlib
 import torch
 import torch.nn as nn
 from timm.models.layers import trunc_normal_, DropPath, to_2tuple
